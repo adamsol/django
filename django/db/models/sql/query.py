@@ -23,7 +23,9 @@ from django.core.exceptions import (
 from django.db import DEFAULT_DB_ALIAS, NotSupportedError, connections
 from django.db.models.aggregates import Count
 from django.db.models.constants import LOOKUP_SEP
-from django.db.models.expressions import BaseExpression, Col, F, OuterRef, Ref
+from django.db.models.expressions import (
+    BaseExpression, Col, F, OuterRef, Ref, Subquery,
+)
 from django.db.models.fields import Field
 from django.db.models.fields.related_lookups import MultiColSource
 from django.db.models.lookups import Lookup
@@ -1330,6 +1332,18 @@ class Query(BaseExpression):
         condition = self.build_lookup(lookups, col, value)
         lookup_type = condition.lookup_name
         clause.add(condition, AND)
+
+        # Like in `split_exclude`, make sure that there are no NULL values in
+        # the subquery, otherwise `NOT IN` would always produce false.
+        if lookup_type == 'in':
+            if isinstance(value, Subquery):
+                value = value.query
+            if isinstance(value, Query) and getattr(value, 'has_select_fields', True):
+                # If there are no select fields, primary key will be used, and
+                # it cannot be NULL anyway.
+                select = value.select or list(value.annotation_select.values())
+                condition = self.build_lookup(['isnull'], select[0], False)
+                value.where.add(condition, AND)
 
         require_outer = lookup_type == 'isnull' and condition.rhs is True and not current_negated
         if current_negated and (lookup_type != 'isnull' or condition.rhs is False) and condition.rhs is not None:

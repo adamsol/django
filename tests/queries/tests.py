@@ -7,7 +7,7 @@ from threading import Lock
 
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db import DEFAULT_DB_ALIAS, connection
-from django.db.models import Count, Exists, F, OuterRef, Q
+from django.db.models import Count, Exists, F, OuterRef, Q, Subquery
 from django.db.models.expressions import RawSQL
 from django.db.models.sql.constants import LOUTER
 from django.db.models.sql.where import NothingNode, WhereNode
@@ -2990,6 +2990,8 @@ class NullInExcludeTest(TestCase):
     def setUpTestData(cls):
         NullableName.objects.create(name='i1')
         NullableName.objects.create()
+        RelatedObject.objects.create(single=SingleObject.objects.create(name='a'), f=42)
+        RelatedObject.objects.create(single=SingleObject.objects.create(name='b'))
 
     def test_null_in_exclude_qs(self):
         none_val = '' if connection.features.interprets_empty_strings_as_nulls else None
@@ -3009,6 +3011,31 @@ class NullInExcludeTest(TestCase):
         # The inner queryset wasn't executed - it should be turned
         # into subquery above
         self.assertIs(inner_qs._result_cache, None)
+
+    def test_ticket20024(self):
+        self.assertQuerysetEqual(
+            NullableName.objects.exclude(name__in=['i5', None]).exclude(name=None),
+            ['i1'], attrgetter('name'))
+        inner_qs = NullableName.objects.filter(name=None).values('name')
+        self.assertQuerysetEqual(
+            NullableName.objects.exclude(name__in=inner_qs).exclude(name=None),
+            ['i1'], attrgetter('name'))
+        self.assertQuerysetEqual(
+            NullableName.objects.exclude(name__in=Subquery(inner_qs)).exclude(name=None),
+            ['i1'], attrgetter('name'))
+        inner_qs = NullableName.objects.annotate(name2=F('name')).filter(name2=None).values('name2')
+        self.assertQuerysetEqual(
+            NullableName.objects.exclude(name__in=inner_qs).exclude(name=None),
+            ['i1'], attrgetter('name'))
+
+    def test_ticket20024_related_in(self):
+        self.assertQuerysetEqual(
+            SingleObject.objects.exclude(relatedobject__f__in=[None]).exclude(relatedobject__f=None),
+            ['a'], attrgetter('name'))
+        inner_qs = RelatedObject.objects.filter(f=None).values('f')
+        self.assertQuerysetEqual(
+            SingleObject.objects.exclude(relatedobject__f__in=inner_qs).exclude(relatedobject__f=None),
+            ['a'], attrgetter('name'))
 
     @unittest.expectedFailure
     def test_col_not_in_list_containing_null(self):
@@ -3545,7 +3572,6 @@ class ManyToManyExcludeTest(TestCase):
         b2 = Book.objects.create(title='b2', chapter=ch2)
         b3 = Book.objects.create(title='b3', chapter=ch3)
         q = Book.objects.exclude(chapter__paragraph__page__text='pg1')
-        self.assertNotIn('IS NOT NULL', str(q.query))
         self.assertEqual(len(q), 2)
         self.assertNotIn(b1, q)
         self.assertIn(b2, q)

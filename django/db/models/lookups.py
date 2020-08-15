@@ -368,7 +368,8 @@ class In(FieldGetDbPrepValueIterableMixin, BuiltinLookup):
             )
 
         if self.rhs_is_direct_value():
-            # Remove None from the list as NULL is never equal to anything.
+            # Remove None from the list as NULL is never equal to anything and
+            # `x NOT IN (list_containing_NULL)` always returns false.
             try:
                 rhs = OrderedSet(self.rhs)
                 rhs.discard(None)
